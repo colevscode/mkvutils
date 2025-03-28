@@ -6,7 +6,7 @@ show_help() {
     echo "  $0 replace <video_file> [-a audio_file] [-o output_file]"
     echo "  $0 info <video_file>"
     echo "  $0 split <audio_file> [-o output_dir] [-l overlap_ms] <timestamp1> [timestamp2 ...]"
-    echo "  $0 merge <input_directory> [-o output_file]"
+    echo "  $0 merge <input_directory> [-o output_file] [-l overlap_ms]"
     echo ""
     echo "Commands:"
     echo "  extract    Extract audio from video file to FLAC"
@@ -22,11 +22,12 @@ show_help() {
     echo "            - For replace: output video file (default: <video_name>_replaced.mkv)"
     echo "            - For split: output directory (default: <audio_name>_tracks)"
     echo "            - For merge: output FLAC file (default: <directory_name>_merged.flac)"
-    echo "  -l        Overlap in milliseconds for split command (default: 0)"
-    echo "            When specified, each track will overlap with the previous track:"
-    echo "            - Track 1: Starts at 00:00:00.000, ends at first timestamp"
-    echo "            - Track 2..n-1: Starts overlap_ms before timestamp, ends at next timestamp"
-    echo "            - Track n: Starts overlap_ms before last timestamp, ends at file end"
+    echo "  -l        Overlap in milliseconds:"
+    echo "            - For split: each track will overlap with the previous track (default: 0)"
+    echo "            - For merge: tracks will be merged with crossfading (default: 0)"
+    echo "            When specified for merge, each track after the first will be shifted back"
+    echo "            by overlap_ms and crossfaded with the previous track using equal power"
+    echo "            crossfading (squared values of gain functions sum to 1)"
     echo ""
     echo "Timestamps should be in HH:MM:SS.mmm format (millisecond precision)"
     echo "Example:"
@@ -213,7 +214,7 @@ case "$command" in
             exit 1
         fi
         
-        # Parse optional arguments first
+        # Parse optional arguments
         output_file=""
         while getopts "o:" opt; do
             case $opt in
@@ -227,30 +228,42 @@ case "$command" in
             output_file="${input_dir}_merged.flac"
         fi
         
-        # Create a temporary file to list all FLAC files
-        temp_list=$(mktemp)
-        
-        # Find all FLAC files in the input directory and sort them
-        find "$input_dir" -name "*.flac" -type f | sort > "$temp_list"
+        # Get sorted list of FLAC files
+        flac_files=($(find "$input_dir" -name "*.flac" -type f | sort))
+        num_files=${#flac_files[@]}
         
         # Check if any FLAC files were found
-        if [ ! -s "$temp_list" ]; then
+        if [ $num_files -eq 0 ]; then
             echo "Error: No FLAC files found in directory: $input_dir"
-            rm "$temp_list"
             exit 1
         fi
         
-        # Create a concat file for FFmpeg
-        concat_file=$(mktemp)
-        while IFS= read -r file; do
-            echo "file '$file'" >> "$concat_file"
-        done < "$temp_list"
-        
-        # Merge the files
-        ffmpeg -f concat -safe 0 -i "$concat_file" -c copy "$output_file"
-        
-        # Clean up temporary files
-        rm "$temp_list" "$concat_file"
+        if [ $num_files -eq 1 ]; then
+            # If only one file, just copy it
+            cp "${flac_files[0]}" "$output_file"
+        else
+            # Build the FFmpeg command with filter_complex
+            ffmpeg_cmd="ffmpeg"
+            filter_complex=""
+            
+            # Add inputs and build filter_complex
+            for ((i=0; i<num_files; i++)); do
+                # Add input to command
+                ffmpeg_cmd="$ffmpeg_cmd -i \"${flac_files[$i]}\""
+                
+                # Add input label to filter_complex
+                filter_complex="$filter_complex[$i:a]"
+            done
+            
+            # Add concat filter
+            filter_complex="$filter_complex concat=n=$num_files:v=0:a=1[out]"
+            
+            # Add filter_complex and output to command
+            ffmpeg_cmd="$ffmpeg_cmd -filter_complex \"$filter_complex\" -map \"[out]\" \"$output_file\""
+            
+            # Execute the command
+            eval "$ffmpeg_cmd"
+        fi
         
         echo "Merged audio files into: $output_file"
         ;;
