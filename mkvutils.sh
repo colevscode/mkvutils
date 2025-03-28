@@ -216,9 +216,11 @@ case "$command" in
         
         # Parse optional arguments
         output_file=""
-        while getopts "o:" opt; do
+        overlap_ms=0
+        while getopts "o:l:" opt; do
             case $opt in
                 o) output_file="$OPTARG";;
+                l) overlap_ms="$OPTARG";;
                 \?) show_help;;
             esac
         done
@@ -245,21 +247,51 @@ case "$command" in
             # Build the FFmpeg command with filter_complex
             ffmpeg_cmd="ffmpeg"
             filter_complex=""
+            total_duration=0
             
             # Add inputs and build filter_complex
             for ((i=0; i<num_files; i++)); do
                 # Add input to command
                 ffmpeg_cmd="$ffmpeg_cmd -i \"${flac_files[$i]}\""
                 
-                # Add input label to filter_complex
-                filter_complex="$filter_complex[$i:a]"
+                # Get duration of current file
+                duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${flac_files[$i]}")
+                duration_ms=$(echo "scale=0; $duration * 1000" | bc)
+                
+                if [ $i -eq 0 ]; then
+                    # First file - no delay
+                    filter_complex=""
+                else
+                    # Calculate delay for this file
+                    delay_ms=$(echo "scale=0; $total_duration - $overlap_ms" | bc)
+                    filter_complex="$filter_complex[$i:a]adelay=${delay_ms}|${delay_ms}[delayed$i];"
+                fi
+                
+                # Update total duration for next iteration
+                total_duration=$(echo "scale=0; $total_duration + $duration_ms" | bc)
             done
             
-            # Add concat filter
-            filter_complex="$filter_complex concat=n=$num_files:v=0:a=1[out]"
+            # Calculate final duration (total minus overlaps)
+            final_duration_ms=$(echo "scale=0; $total_duration - ($overlap_ms * ($num_files - 1))" | bc)
+            
+            # Add mix filter to combine all streams
+            if [ $num_files -gt 1 ]; then
+                # Add first stream
+                mix_inputs="[0:a]"
+                # Add delayed streams
+                for ((i=1; i<num_files; i++)); do
+                    mix_inputs="$mix_inputs[delayed$i]"
+                done
+                # Use amix without duration parameter to let FFmpeg determine it automatically
+                filter_complex="$filter_complex ${mix_inputs}amix=inputs=$num_files:dropout_transition=0:normalize=0[out]"
+            fi
             
             # Add filter_complex and output to command
             ffmpeg_cmd="$ffmpeg_cmd -filter_complex \"$filter_complex\" -map \"[out]\" \"$output_file\""
+            
+            # Echo the command for inspection
+            echo "Generated FFmpeg command:"
+            echo "$ffmpeg_cmd"
             
             # Execute the command
             eval "$ffmpeg_cmd"
