@@ -191,7 +191,9 @@ case "$command" in
         
         # Extract the final track
         output_file="$output_dir/track_$(printf "%02d" $track_num).flac"
-        ffmpeg -i "$audio_file" -ss "$prev_seconds" -acodec flac "$output_file"
+        # Calculate start time with overlap for final track
+        start_seconds=$(echo "scale=3; $prev_seconds - ($overlap_ms/1000)" | bc)
+        ffmpeg -i "$audio_file" -ss "$start_seconds" -acodec flac "$output_file"
         echo "Created track $track_num: $output_file"
         
         echo "All tracks have been created in: $output_dir"
@@ -256,31 +258,35 @@ case "$command" in
                 
                 # Get duration of current file
                 duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${flac_files[$i]}")
-                duration_ms=$(echo "scale=0; $duration * 1000" | bc)
+                duration_ms=$(echo "scale=3; $duration * 1000" | bc)
                 
                 if [ $i -eq 0 ]; then
-                    # First file - no delay
-                    filter_complex=""
+                    # First file - no delay, but fade out at the end
+                    filter_complex="$filter_complex[0:a]afade=t=out:st=$(echo "scale=3; ($duration_ms-$overlap_ms)/1000" | bc):d=$(echo "scale=3; $overlap_ms/1000" | bc):curve=qsin[0a];"
+                    # Update total duration for next iteration
+                    total_duration=$(echo "scale=3; $total_duration + $duration_ms" | bc)
                 else
                     # Calculate delay for this file
-                    delay_ms=$(echo "scale=0; $total_duration - $overlap_ms" | bc)
-                    filter_complex="$filter_complex[$i:a]adelay=${delay_ms}|${delay_ms}[delayed$i];"
+                    delay_ms=$(echo "scale=3; $total_duration - $overlap_ms" | bc)
+                    # Apply both fade in and fade out first with same duration
+                    filter_complex="$filter_complex[$i:a]afade=t=in:st=0:d=$(echo "scale=3; $overlap_ms/1000" | bc):curve=hsin[faded$i];"
+                    if [ $i -lt $((num_files-1)) ]; then
+                        filter_complex="$filter_complex[faded$i]afade=t=out:st=$(echo "scale=3; ($duration_ms-$overlap_ms)/1000" | bc):d=$(echo "scale=3; $overlap_ms/1000" | bc):curve=qsin[faded$i];"
+                    fi
+                    # Then apply delay to the already faded audio
+                    filter_complex="$filter_complex[faded$i]adelay=${delay_ms}|${delay_ms}[delayed${i}a];"
+                    # Update total duration for next iteration, accounting for overlap
+                    total_duration=$(echo "scale=3; $total_duration + $duration_ms - $overlap_ms" | bc)
                 fi
-                
-                # Update total duration for next iteration
-                total_duration=$(echo "scale=0; $total_duration + $duration_ms" | bc)
             done
-            
-            # Calculate final duration (total minus overlaps)
-            final_duration_ms=$(echo "scale=0; $total_duration - ($overlap_ms * ($num_files - 1))" | bc)
             
             # Add mix filter to combine all streams
             if [ $num_files -gt 1 ]; then
                 # Add first stream
-                mix_inputs="[0:a]"
-                # Add delayed streams
+                mix_inputs="[0a]"
+                # Add delayed and faded streams
                 for ((i=1; i<num_files; i++)); do
-                    mix_inputs="$mix_inputs[delayed$i]"
+                    mix_inputs="$mix_inputs[delayed${i}a]"
                 done
                 # Use amix without duration parameter to let FFmpeg determine it automatically
                 filter_complex="$filter_complex ${mix_inputs}amix=inputs=$num_files:dropout_transition=0:normalize=0[out]"
