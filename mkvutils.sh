@@ -1,5 +1,15 @@
 #!/bin/bash
 
+# Helper function to get audio duration in seconds
+get_duration() {
+    ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$1"
+}
+
+# Helper function to get audio sample rate
+get_sample_rate() {
+    ffprobe -v error -select_streams a:0 -show_entries stream=sample_rate -of default=noprint_wrappers=1:nokey=1 "$1"
+}
+
 show_help() {
     echo "Usage:"
     echo "  $0 extract <video_file> [-o output_file]"
@@ -7,6 +17,8 @@ show_help() {
     echo "  $0 info <video_file>"
     echo "  $0 split <audio_file> [-o output_dir] [-l overlap_ms] <timestamp1> [timestamp2 ...]"
     echo "  $0 merge <input_directory> [-o output_file] [-l overlap_ms]"
+    echo "  $0 pad <audio_file> [-o output_file] [-b start_pad_ms] [-e end_pad_ms]"
+    echo "  $0 trim <audio_file> [-o output_file] [-b start_trim_ms] [-e end_trim_ms]"
     echo ""
     echo "Commands:"
     echo "  extract    Extract audio from video file to FLAC"
@@ -14,6 +26,8 @@ show_help() {
     echo "  info       Display detailed media information"
     echo "  split      Split audio file into tracks using timestamps"
     echo "  merge      Merge multiple FLAC files into a single file"
+    echo "  pad        Add silence padding to the beginning or end of an audio file"
+    echo "  trim       Remove audio from the beginning or end of a file"
     echo ""
     echo "Options:"
     echo "  -a        Audio file to use for replacement (default: <video_name>.flac)"
@@ -22,17 +36,45 @@ show_help() {
     echo "            - For replace: output video file (default: <video_name>_replaced.mkv)"
     echo "            - For split: output directory (default: <audio_name>_tracks)"
     echo "            - For merge: output FLAC file (default: <directory_name>_merged.flac)"
+    echo "            - For pad: output FLAC file (default: <audio_name>_padded.flac)"
+    echo "            - For trim: output FLAC file (default: <audio_name>_trimmed.flac)"
     echo "  -l        Overlap in milliseconds:"
     echo "            - For split: each track will overlap with the previous track (default: 0)"
     echo "            - For merge: tracks will be merged with crossfading (default: 0)"
     echo "            When specified for merge, each track after the first will be shifted back"
     echo "            by overlap_ms and crossfaded with the previous track using equal power"
     echo "            crossfading (squared values of gain functions sum to 1)"
+    echo "  -b        For pad: Start padding duration in milliseconds (default: 0)"
+    echo "            For trim: Amount to trim from start in milliseconds (default: 0)"
+    echo "  -e        For pad: End padding duration in milliseconds (default: 0)"
+    echo "            For trim: Amount to trim from end in milliseconds (default: 0)"
     echo ""
     echo "Timestamps should be in HH:MM:SS.mmm format (millisecond precision)"
-    echo "Example:"
+    echo ""
+    echo "Examples:"
+    echo "  # Extract audio from video"
+    echo "  ./mkvutils.sh extract video.mkv"
+    echo "  ./mkvutils.sh extract video.mkv -o custom_audio.flac"
+    echo ""
+    echo "  # Replace audio in video"
+    echo "  ./mkvutils.sh replace video.mkv -a new_audio.flac"
+    echo "  ./mkvutils.sh replace video.mkv -a new_audio.flac -o output.mkv"
+    echo ""
+    echo "  # Display media information"
+    echo "  ./mkvutils.sh info video.mkv"
+    echo ""
+    echo "  # Split audio into tracks with overlap"
     echo "  ./mkvutils.sh split audio.flac -o custom_tracks -l 200 00:03:45.123 00:08:30.456"
     echo "  # Creates tracks with 200ms overlap before each split point"
+    echo ""
+    echo "  # Merge audio files with crossfading"
+    echo "  ./mkvutils.sh merge tracks_dir -o merged.flac -l 200"
+    echo ""
+    echo "  # Add silence padding to audio"
+    echo "  ./mkvutils.sh pad audio.flac -b 500 -e 1000"
+    echo ""
+    echo "  # Trim audio from start and end"
+    echo "  ./mkvutils.sh trim audio.flac -b 100 -e 200"
     exit 1
 }
 
@@ -304,6 +346,136 @@ case "$command" in
         fi
         
         echo "Merged audio files into: $output_file"
+        ;;
+        
+    "pad")
+        # Check if input file is provided
+        if [ $# -lt 2 ]; then
+            echo "Error: Input audio file must be provided"
+            show_help
+            exit 1
+        fi
+        
+        audio_file="$2"
+        shift 2  # Remove command and audio_file from args
+        
+        # Check if input file exists
+        if [ ! -f "$audio_file" ]; then
+            echo "Error: Input file not found: $audio_file"
+            exit 1
+        fi
+        
+        output_file=""
+        start_pad_ms=0
+        end_pad_ms=0
+        
+        # Parse optional arguments
+        while getopts "o:b:e:" opt; do
+            case $opt in
+                o) output_file="$OPTARG";;
+                b) start_pad_ms="$OPTARG"
+                   if [ $start_pad_ms -lt 0 ]; then
+                       echo "Error: Start padding value must be non-negative"
+                       exit 1
+                   fi;;
+                e) end_pad_ms="$OPTARG"
+                   if [ $end_pad_ms -lt 0 ]; then
+                       echo "Error: End padding value must be non-negative"
+                       exit 1
+                   fi;;
+                \?) show_help;;
+            esac
+        done
+        
+        # Set default output file name if not specified
+        if [ -z "$output_file" ]; then
+            output_file="${audio_file%.*}_padded.flac"
+        fi
+        
+        # Build FFmpeg command with filters
+        ffmpeg_cmd="ffmpeg -i \"$audio_file\""
+        
+        if [ $start_pad_ms -gt 0 ] || [ $end_pad_ms -gt 0 ]; then
+            filter_complex="[0:a]"
+            
+            # Add start padding if needed
+            if [ $start_pad_ms -gt 0 ]; then
+                filter_complex="$filter_complex adelay=${start_pad_ms}|${start_pad_ms}"
+            fi
+            
+            # Add end padding if needed
+            if [ $end_pad_ms -gt 0 ]; then
+                if [ $start_pad_ms -gt 0 ]; then
+                    filter_complex="$filter_complex,"
+                fi
+                filter_complex="$filter_complex apad=pad_dur=$(echo "scale=3; $end_pad_ms / 1000" | bc)"
+            fi
+            
+            filter_complex="$filter_complex[out]"
+            ffmpeg_cmd="$ffmpeg_cmd -filter_complex \"$filter_complex\" -map \"[out]\""
+        fi
+        
+        ffmpeg_cmd="$ffmpeg_cmd \"$output_file\""
+        
+        # Execute the command
+        eval "$ffmpeg_cmd"
+        echo "Created padded audio file: $output_file"
+        ;;
+        
+    "trim")
+        # Check if input file is provided
+        if [ $# -lt 2 ]; then
+            echo "Error: Input audio file must be provided"
+            show_help
+            exit 1
+        fi
+        
+        audio_file="$2"
+        shift 2  # Remove command and audio_file from args
+        
+        # Check if input file exists
+        if [ ! -f "$audio_file" ]; then
+            echo "Error: Input file not found: $audio_file"
+            exit 1
+        fi
+        
+        # Set default values
+        output_file="${audio_file%.*}_trimmed.flac"
+        start_trim_ms=0
+        end_trim_ms=0
+        
+        # Parse optional arguments
+        while getopts "o:b:e:" opt; do
+            case $opt in
+                o) output_file="$OPTARG";;
+                b) start_trim_ms="$OPTARG";;
+                e) end_trim_ms="$OPTARG";;
+                \?) show_help;;
+            esac
+        done
+        
+        # Convert milliseconds to seconds for FFmpeg
+        start_trim_sec=$(echo "scale=3; $start_trim_ms / 1000" | bc | sed 's/^\./0./')
+        end_trim_sec=$(echo "scale=3; $end_trim_ms / 1000" | bc | sed 's/^\./0./')
+        
+        # Get total duration
+        total_duration=$(get_duration "$audio_file")
+        
+        # Build FFmpeg command with atrim filter
+        ffmpeg_cmd="ffmpeg -i \"$audio_file\""
+        
+        if [ $start_trim_ms -gt 0 ] || [ $end_trim_ms -gt 0 ]; then
+            # Calculate end time by subtracting end_trim_sec from total duration
+            end_time=$(echo "scale=3; $total_duration - $end_trim_sec" | bc | sed 's/^\./0./')
+            filter_complex="[0:a]atrim=start=$start_trim_sec:end=$end_time[out]"
+            ffmpeg_cmd="$ffmpeg_cmd -filter_complex \"$filter_complex\" -map \"[out]\""
+        fi
+        
+        ffmpeg_cmd="$ffmpeg_cmd \"$output_file\""
+        
+        # Execute the command
+        eval "$ffmpeg_cmd"
+        echo "Created trimmed audio file: $output_file"
         ;;
         
     *)

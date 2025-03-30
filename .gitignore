@@ -1,0 +1,5 @@
+# Ignore test artifacts
+tests/.artifacts/
+
+# Ignore macOS system files
+.DS_Store 
