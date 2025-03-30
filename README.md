@@ -17,9 +17,61 @@ A simple bash script for working with media files, primarily designed for MKV co
 
 ## Usage
 
-The script provides five main commands:
+The script provides seven main commands:
 
-### 1. Extract Audio
+### 1. Pad Audio
+
+Add silence to the start and/or end of an audio file.
+
+```bash
+./mkvutils.sh pad <audio_file> [-b start_ms] [-e end_ms] [-o output_file]
+```
+
+Options:
+- `audio_file`: The input FLAC audio file (required)
+- `-b start_ms`: Add silence at the start (in milliseconds)
+- `-e end_ms`: Add silence at the end (in milliseconds)
+- `-o output_file`: The output FLAC file (optional, defaults to `<audio_name>_padded.flac`)
+
+Examples:
+```bash
+# Add 500ms silence to start and 1000ms to end
+./mkvutils.sh pad input.flac -b 500 -e 1000
+
+# Add only start padding
+./mkvutils.sh pad input.flac -b 500
+
+# Add only end padding
+./mkvutils.sh pad input.flac -e 1000
+```
+
+### 2. Trim Audio
+
+Remove audio from the start and/or end of an audio file.
+
+```bash
+./mkvutils.sh trim <audio_file> [-b start_ms] [-e end_ms] [-o output_file]
+```
+
+Options:
+- `audio_file`: The input FLAC audio file (required)
+- `-b start_ms`: Remove audio from the start (in milliseconds)
+- `-e end_ms`: Remove audio from the end (in milliseconds)
+- `-o output_file`: The output FLAC file (optional, defaults to `<audio_name>_trimmed.flac`)
+
+Examples:
+```bash
+# Remove 500ms from start and 1000ms from end
+./mkvutils.sh trim input.flac -b 500 -e 1000
+
+# Remove only from start
+./mkvutils.sh trim input.flac -b 500
+
+# Remove only from end
+./mkvutils.sh trim input.flac -e 1000
+```
+
+### 3. Extract Audio
 
 Extracts audio from a video file and saves it as FLAC.
 
@@ -41,7 +93,7 @@ Examples:
 ./mkvutils.sh extract video.mkv -o output.flac
 ```
 
-### 2. Replace Audio
+### 4. Replace Audio
 
 Replaces the audio track in a video file with a new audio file.
 
@@ -70,7 +122,7 @@ Examples:
 ./mkvutils.sh replace video.mkv -a new_audio.flac -o output.mkv
 ```
 
-### 3. Media Information
+### 5. Media Information
 
 Display detailed information about a media file, including duration, codecs, bitrate, and other properties. Works with both video and audio files.
 
@@ -91,7 +143,7 @@ Examples:
 # Shows detailed audio information including duration, sample rate, and format
 ```
 
-### 4. Split Audio
+### 6. Split Audio
 
 Split a FLAC audio file into separate tracks using timestamps with millisecond precision.
 
@@ -138,7 +190,7 @@ Examples:
 ./mkvutils.sh split audio.flac -o custom_tracks -l 200 00:03:45.123 00:08:30.456
 ```
 
-### 5. Merge Audio
+### 7. Merge Audio
 
 Merge multiple FLAC files from a directory into a single FLAC file. Files are merged in alphabetical order, making it perfect for combining tracks created by the `split` command.
 
